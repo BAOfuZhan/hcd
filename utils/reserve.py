@@ -180,10 +180,9 @@ class reserve:
             float(os.getenv("CX_READ_TIMEOUT", "5")),
         )
         # 策略 C 的轻探测超时：只用于 probe_not_open_fast() 判断页面是否仍未开放。
-        # 这里故意短一些，避免轻探测本身拖慢后续正式取 token。
         self.fast_probe_timeout = (
-            float(os.getenv("CX_FAST_PROBE_CONNECT_TIMEOUT", "0.455")),
-            float(os.getenv("CX_FAST_PROBE_READ_TIMEOUT", "0.455")),
+            float(os.getenv("CX_FAST_PROBE_CONNECT_TIMEOUT", "2.83")),
+            float(os.getenv("CX_FAST_PROBE_READ_TIMEOUT", "2.83")),
         )
         self.request_attempts = max(1, int(os.getenv("CX_REQUEST_ATTEMPTS", "3")))
         self.request_retry_delay = float(os.getenv("CX_REQUEST_RETRY_DELAY", "0.2"))
@@ -195,7 +194,7 @@ class reserve:
         # 策略 B/C 的正式 _get_page_token() 路径也会使用它。
         self.token_fetch_timeout = max(
             0.001,
-            float(os.getenv("CX_TOKEN_FETCH_TIMEOUT_MS", "500")) / 1000.0,
+            float(os.getenv("CX_TOKEN_FETCH_TIMEOUT_MS", "2830")) / 1000.0,
         )
         self.headers = {
             "Referer": "https://office.chaoxing.com/",
