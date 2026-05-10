@@ -286,6 +286,17 @@ def _apply_strategy_config(config):
     SUBMIT_MODE = strategy_cfg.get("submit_mode", "serial")
     BURST_OFFSETS_MS = strategy_cfg.get("burst_offsets_ms", [120, 420, 820])
     TOKEN_FETCH_DELAY_MS = int(strategy_cfg.get("token_fetch_delay_ms", 50))
+    token_fetch_timeout_ms = max(
+        1,
+        int(strategy_cfg.get("token_fetch_timeout_ms", 2830)),
+    )
+    fast_probe_timeout_ms = max(
+        1,
+        int(strategy_cfg.get("fast_probe_timeout_ms", 2830)),
+    )
+    os.environ["CX_TOKEN_FETCH_TIMEOUT_MS"] = str(token_fetch_timeout_ms)
+    os.environ["CX_FAST_PROBE_CONNECT_TIMEOUT"] = f"{fast_probe_timeout_ms / 1000.0:g}"
+    os.environ["CX_FAST_PROBE_READ_TIMEOUT"] = f"{fast_probe_timeout_ms / 1000.0:g}"
     FAST_PROBE_START_OFFSET_MS = int(
         strategy_cfg.get("fast_probe_start_offset_ms", FAST_PROBE_START_OFFSET_MS)
     )
