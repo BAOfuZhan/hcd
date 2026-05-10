@@ -182,8 +182,8 @@ class reserve:
         # 策略 C 的轻探测超时：只用于 probe_not_open_fast() 判断页面是否仍未开放。
         # 这里故意短一些，避免轻探测本身拖慢后续正式取 token。
         self.fast_probe_timeout = (
-            float(os.getenv("CX_FAST_PROBE_CONNECT_TIMEOUT", "0.355")),
-            float(os.getenv("CX_FAST_PROBE_READ_TIMEOUT", "0.355")),
+            float(os.getenv("CX_FAST_PROBE_CONNECT_TIMEOUT", "0.455")),
+            float(os.getenv("CX_FAST_PROBE_READ_TIMEOUT", "0.455")),
         )
         self.request_attempts = max(1, int(os.getenv("CX_REQUEST_ATTEMPTS", "3")))
         self.request_retry_delay = float(os.getenv("CX_REQUEST_RETRY_DELAY", "0.2"))
