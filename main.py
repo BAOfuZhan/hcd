@@ -78,6 +78,22 @@ def _wait_until(
         return
 
 
+def _fire_and_forget_warm_connection(s, url: str, timeout_s: float) -> None:
+    """Dispatch connection pre-warm in the background and never wait for it."""
+    def _worker():
+        try:
+            s.warm_connection(url, timeout=timeout_s, quiet=True)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_worker, daemon=True, name="connection-prewarm")
+    t.start()
+    logging.info(
+        "[warm] Fire-and-forget connection pre-warm dispatched, timeout=%dms",
+        int(max(0.001, float(timeout_s)) * 1000),
+    )
+
+
 from utils import AES_Decrypt, reserve, get_user_credentials
 from utils.reserve import CredentialRejectedError
 from utils.time_utils import (
@@ -1172,25 +1188,13 @@ def strategic_first_attempt(
                 _wait_until(warm_dt)
                 first_token_start_dt = _get_first_token_start_dt(target_dt)
                 warm_budget_s = (first_token_start_dt - _beijing_now()).total_seconds()
-                warm_guard_s = 0.1
-                if warm_budget_s <= warm_guard_s:
-                    logging.info(
-                        "[warm] Skip connection pre-warm because first probe/token window "
-                        f"is due at {first_token_start_dt}"
-                    )
-                else:
-                    warm_timeout_s = min(5.0, max(0.001, warm_budget_s - warm_guard_s))
-                    logging.info(
-                        "[warm] Pre-warm budget before first probe/token window: "
-                        f"{warm_budget_s * 1000:.0f}ms; timeout capped at "
-                        f"{warm_timeout_s * 1000:.0f}ms"
-                    )
-                    try:
-                        s.warm_connection(_warm_url, timeout=warm_timeout_s)
-                    except Exception as e:
-                        logging.warning(
-                            f"[warm] Ignore unexpected pre-warm failure and continue: {e}"
-                        )
+                warm_timeout_s = min(5.0, max(0.001, warm_budget_s))
+                logging.info(
+                    "[warm] Dispatch connection pre-warm before first probe/token window: "
+                    f"budget {warm_budget_s * 1000:.0f}ms; background timeout "
+                    f"{warm_timeout_s * 1000:.0f}ms"
+                )
+                _fire_and_forget_warm_connection(s, _warm_url, timeout_s=warm_timeout_s)
                 warm_done = True
 
         if not _ensure_textclick_captcha1_before_strategic_token():
