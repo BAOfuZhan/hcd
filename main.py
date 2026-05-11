@@ -361,6 +361,23 @@ def _get_strategy_login_deadline(target_dt: datetime.datetime) -> datetime.datet
     return target_dt + datetime.timedelta(milliseconds=max_offset_ms + 500)
 
 
+def _get_first_token_start_dt(target_dt: datetime.datetime) -> datetime.datetime:
+    """返回战略流程中首个探测/正式 token 请求最早可能启动的时间。"""
+    if SUBMIT_MODE == "burst":
+        if STRATEGIC_MODE == "A":
+            return target_dt - datetime.timedelta(milliseconds=PRE_FETCH_TOKEN_MS)
+        if STRATEGIC_MODE == "C":
+            return target_dt + datetime.timedelta(milliseconds=FAST_PROBE_START_OFFSET_MS)
+        first_offset = min(BURST_OFFSETS_MS or [FIRST_SUBMIT_OFFSET_MS])
+        return target_dt + datetime.timedelta(milliseconds=first_offset)
+
+    if STRATEGIC_MODE == "A":
+        return target_dt - datetime.timedelta(milliseconds=PRE_FETCH_TOKEN_MS)
+    if STRATEGIC_MODE == "C":
+        return target_dt + datetime.timedelta(milliseconds=FAST_PROBE_START_OFFSET_MS)
+    return target_dt + datetime.timedelta(milliseconds=FIRST_SUBMIT_OFFSET_MS)
+
+
 def _probe_then_get_page_token(
     s,
     token_url: str,
@@ -1153,7 +1170,27 @@ def strategic_first_attempt(
                     milliseconds=WARM_CONNECTION_LEAD_MS
                 )
                 _wait_until(warm_dt)
-                s.warm_connection(_warm_url)
+                first_token_start_dt = _get_first_token_start_dt(target_dt)
+                warm_budget_s = (first_token_start_dt - _beijing_now()).total_seconds()
+                warm_guard_s = 0.1
+                if warm_budget_s <= warm_guard_s:
+                    logging.info(
+                        "[warm] Skip connection pre-warm because first probe/token window "
+                        f"is due at {first_token_start_dt}"
+                    )
+                else:
+                    warm_timeout_s = min(5.0, max(0.001, warm_budget_s - warm_guard_s))
+                    logging.info(
+                        "[warm] Pre-warm budget before first probe/token window: "
+                        f"{warm_budget_s * 1000:.0f}ms; timeout capped at "
+                        f"{warm_timeout_s * 1000:.0f}ms"
+                    )
+                    try:
+                        s.warm_connection(_warm_url, timeout=warm_timeout_s)
+                    except Exception as e:
+                        logging.warning(
+                            f"[warm] Ignore unexpected pre-warm failure and continue: {e}"
+                        )
                 warm_done = True
 
         if not _ensure_textclick_captcha1_before_strategic_token():

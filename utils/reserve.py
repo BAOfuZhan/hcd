@@ -761,7 +761,7 @@ class reserve:
             logging.warning(f"Failed to save debug HTML for seat page: {e}")
         return "", ""
 
-    def warm_connection(self, url):
+    def warm_connection(self, url, timeout=5):
         """预热 TCP+TLS 连接池。
 
         发送一次和获取 token 完全相同的真实 GET 请求，结果直接丢弃。
@@ -770,16 +770,19 @@ class reserve:
         """
         self._connection_trace_context = {"kind": "warm"}
         try:
-            logging.info(f"[warm] Start connection pre-warm request via {url}")
+            logging.info(
+                f"[warm] Start connection pre-warm request via {url}, "
+                f"timeout={max(0.001, float(timeout)) * 1000:.0f}ms"
+            )
             self._get(
                 url=url,
                 verify=False,
-                timeout=5,
+                timeout=max(0.001, float(timeout)),
                 attempts=1,
                 request_name="[warm] connection pre-warm",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"[warm] Connection pre-warm ignored after error: {e}")
         finally:
             self._connection_trace_context = None
 
