@@ -6,6 +6,7 @@ import time
 import logging
 import datetime
 import os
+import threading
 from urllib.parse import urlparse, parse_qs, unquote
 from urllib3.exceptions import InsecureRequestWarning
 from requests.adapters import HTTPAdapter
@@ -1417,6 +1418,7 @@ class reserve:
         seatid,
         captcha="",
         *,
+        dept_id_enc="",
         use_custom_day=False,
     ):
         normalized_times = parse_times_range(times)
@@ -1426,7 +1428,10 @@ class reserve:
             use_custom_day=use_custom_day,
             reserve_day_offset=self.reserve_day_offset,
         )
-        parm = {
+        parm = {}
+        if dept_id_enc:
+            parm["deptIdEnc"] = dept_id_enc
+        parm.update({
             "roomId": roomid,
             "startTime": normalized_times[0],
             "endTime": normalized_times[1],
@@ -1434,7 +1439,7 @@ class reserve:
             "seatNum": seatid,
             "captcha": captcha,
             "wyToken": "",
-        }
+        })
         logging.info(
             "submit parameter resolved: raw_times=%s, use_custom_day=%s, resolved_day=%s, submit_param=%s",
             times,
@@ -1443,6 +1448,170 @@ class reserve:
             parm,
         )
         return normalized_times, day, parm
+
+    def post_getusedtimes_after_token(
+        self,
+        times,
+        roomid,
+        seatid,
+        day,
+        fid_enc="",
+    ):
+        """拿到页面 submit_enc 后，后台 POST 一次 getusedtimes，不阻塞正式提交。"""
+        handle = {
+            "event": threading.Event(),
+            "result": None,
+            "conflict": None,
+            "error": "",
+        }
+        args = (handle, times, roomid, seatid, day, fid_enc)
+        thread = threading.Thread(
+            target=self._post_getusedtimes_after_token_sync,
+            args=args,
+            daemon=True,
+            name="seat-getusedtimes",
+        )
+        thread.start()
+        logging.info(
+            "seat getusedtimes dispatched asynchronously: roomId=%s, seatNum=%s, day=%s, fidEnc=%s",
+            roomid,
+            seatid,
+            day,
+            fid_enc or "",
+        )
+        return handle
+
+    def _post_getusedtimes_after_token_sync(
+        self,
+        handle,
+        times,
+        roomid,
+        seatid,
+        day,
+        fid_enc="",
+    ):
+        parm = {
+            "roomId": roomid,
+            "seatNum": seatid,
+            "day": str(day),
+            "fidEnc": fid_enc or "",
+        }
+        url = self.api_urls["seat"]["seat"]
+        logging.info(
+            "post getusedtimes after token: url=%s, param=%s",
+            url,
+            parm,
+        )
+        try:
+            response = self._post(
+                url=url,
+                data=parm,
+                verify=False,
+                attempts=1,
+                request_name="seat getusedtimes",
+            )
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"seat getusedtimes request failed: {e}")
+            handle["error"] = str(e)
+            handle["event"].set()
+            return None
+
+        html = response.content.decode("utf-8", errors="ignore")
+        try:
+            data = json.loads(html)
+        except ValueError:
+            data = {"raw": html[:500]}
+        logging.info("seat getusedtimes response: %s", data)
+        conflict = self._log_getusedtimes_conflict(data, times, day, seatid)
+        handle["result"] = data
+        handle["conflict"] = conflict
+        handle["event"].set()
+        return data
+
+    @staticmethod
+    def _beijing_datetime_from_ms(timestamp_ms):
+        try:
+            value = int(timestamp_ms)
+        except (TypeError, ValueError):
+            return None
+        tz = datetime.timezone(datetime.timedelta(hours=8))
+        return datetime.datetime.fromtimestamp(value / 1000, tz=tz)
+
+    @staticmethod
+    def _parse_reserve_datetime(day, hhmm: str):
+        text = str(day)
+        try:
+            reserve_day = (
+                day
+                if isinstance(day, datetime.date)
+                else datetime.datetime.strptime(text, "%Y-%m-%d").date()
+            )
+            hour, minute = map(int, str(hhmm).split(":", 1))
+        except (TypeError, ValueError):
+            return None
+        tz = datetime.timezone(datetime.timedelta(hours=8))
+        return datetime.datetime(
+            reserve_day.year,
+            reserve_day.month,
+            reserve_day.day,
+            hour,
+            minute,
+            tzinfo=tz,
+        )
+
+    def _log_getusedtimes_conflict(self, data, times, day, seatid):
+        normalized_times = parse_times_range(times)
+        requested_start = self._parse_reserve_datetime(day, normalized_times[0])
+        requested_end = self._parse_reserve_datetime(day, normalized_times[1])
+        if not requested_start or not requested_end:
+            logging.warning(
+                "seat getusedtimes conflict check skipped: invalid request interval day=%s times=%s",
+                day,
+                normalized_times,
+            )
+            return None
+
+        raw_intervals = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(raw_intervals, list) or not raw_intervals:
+            logging.info(
+                "seat getusedtimes conflict check: seat=%s requested=%s~%s, used=[], conflict=False",
+                seatid,
+                requested_start.strftime("%Y-%m-%d %H:%M"),
+                requested_end.strftime("%Y-%m-%d %H:%M"),
+            )
+            return False
+
+        used_intervals = []
+        conflict_intervals = []
+        for item in raw_intervals:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            used_start = self._beijing_datetime_from_ms(item[0])
+            used_end = self._beijing_datetime_from_ms(item[1])
+            if not used_start or not used_end:
+                continue
+            used_intervals.append((used_start, used_end))
+            if requested_start < used_end and requested_end > used_start:
+                conflict_intervals.append((used_start, used_end))
+
+        used_text = [
+            f"{start.strftime('%Y-%m-%d %H:%M')}~{end.strftime('%Y-%m-%d %H:%M')}"
+            for start, end in used_intervals
+        ]
+        conflict_text = [
+            f"{start.strftime('%Y-%m-%d %H:%M')}~{end.strftime('%Y-%m-%d %H:%M')}"
+            for start, end in conflict_intervals
+        ]
+        logging.info(
+            "seat getusedtimes conflict check: seat=%s requested=%s~%s, used=%s, conflict=%s, conflict_intervals=%s",
+            seatid,
+            requested_start.strftime("%Y-%m-%d %H:%M"),
+            requested_end.strftime("%Y-%m-%d %H:%M"),
+            used_text,
+            bool(conflict_intervals),
+            conflict_text,
+        )
+        return bool(conflict_intervals)
 
     def submit(
         self,
@@ -1524,7 +1693,6 @@ class reserve:
                         "No submit_enc token fetched, break current submit loop and retry with new session"
                     )
                     break
-
                 # 根据开关决定使用哪种验证码（两种验证码可以同时开启）
                 captcha = ""
                 if self.enable_slider:
@@ -1556,6 +1724,7 @@ class reserve:
                     captcha=captcha,
                     action=action,
                     value=value,
+                    dept_id_enc=fidEnc,
                     use_custom_day=use_custom_day,
                 )
                 if suc:
@@ -1574,6 +1743,7 @@ class reserve:
         captcha="",
         action=False,
         value="",
+        dept_id_enc="",
         use_custom_day=False,
     ):
         # 与前端保持一致：提交 roomId/startTime/endTime/day/seatNum/captcha/wyToken，再计算 enc
@@ -1584,6 +1754,7 @@ class reserve:
             roomid,
             seatid,
             captcha,
+            dept_id_enc=dept_id_enc,
             use_custom_day=use_custom_day,
         )
         # 使用页面上的 submit_enc（value）作为算法值生成 enc
@@ -1617,6 +1788,7 @@ class reserve:
         captcha,
         token,
         value,
+        dept_id_enc="",
         use_custom_day=False,
     ):
         """单次提交，返回完整响应 dict，用于 1.8 秒高频窗口内的逻辑判断。
@@ -1629,6 +1801,7 @@ class reserve:
             roomid,
             seatid,
             captcha,
+            dept_id_enc=dept_id_enc,
             use_custom_day=use_custom_day,
         )
         parm["enc"] = verify_param(parm, value)
