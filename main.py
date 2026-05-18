@@ -438,7 +438,8 @@ def _get_first_token_day(
 
 def _get_beijing_target_from_endtime() -> datetime.datetime:
     """根据 ENDTIME 计算目标时间（北京时间，当天 ENDTIME 减 40 秒）。"""
-    today = _beijing_now().date()
+    now = _beijing_now()
+    today = now.date()
     h, m, s = map(int, ENDTIME.split(":"))
     end_dt = datetime.datetime(
         year=today.year,
@@ -449,8 +450,15 @@ def _get_beijing_target_from_endtime() -> datetime.datetime:
         second=s,
         tzinfo=ZoneInfo("Asia/Shanghai"),
     )
+    if end_dt < now and now - end_dt > datetime.timedelta(hours=12):
+        end_dt += datetime.timedelta(days=1)
     return end_dt - datetime.timedelta(seconds=40)
     # return end_dt - datetime.timedelta(minutes=1)  # ENDTIME 前 1 分钟（60秒）
+
+
+def _get_beijing_end_dt_from_target(target_dt: datetime.datetime) -> datetime.datetime:
+    """返回本轮预约窗口的结束时刻，支持 ENDTIME 跨午夜。"""
+    return target_dt + datetime.timedelta(seconds=40)
 
 
 def _get_strategy_login_deadline(target_dt: datetime.datetime) -> datetime.datetime:
@@ -1958,8 +1966,9 @@ def login_and_reserve(
 def main(users, action=False):
     global MAX_ATTEMPT
     target_dt = _get_beijing_target_from_endtime()
+    end_dt = _get_beijing_end_dt_from_target(target_dt)
     logging.info(
-        f"start time {get_log_time(action)}, action {'on' if action else 'off'}, target_dt {target_dt}"
+        f"start time {get_log_time(action)}, action {'on' if action else 'off'}, target_dt {target_dt}, end_dt {end_dt}"
     )
     attempt_times = 0
     usernames, passwords = None, None
@@ -2001,11 +2010,10 @@ def main(users, action=False):
     fallback_used_seats = [set() for _ in users]
 
     while True:
-        # 使用逻辑时间 _now(action)，在 GitHub Actions 下就是北京时间
-        current_time = get_hms(action)
-        if current_time >= ENDTIME:
+        current_dt = _beijing_now()
+        if current_dt >= end_dt:
             logging.info(
-                f"Current time {current_time} >= ENDTIME {ENDTIME}, stop main loop"
+                f"Current time {current_dt.strftime('%Y-%m-%d %H:%M:%S')} >= end_dt {end_dt.strftime('%Y-%m-%d %H:%M:%S')} (ENDTIME {ENDTIME}), stop main loop"
             )
             return
 
@@ -2099,7 +2107,7 @@ def main(users, action=False):
             )
 
         print(
-            f"attempt time {attempt_times}, time now {current_time}, success list {success_list}"
+            f"attempt time {attempt_times}, time now {current_dt}, success list {success_list}"
         )
         if sum(success_list) == today_reservation_num:
             print(f"reserved successfully!")
