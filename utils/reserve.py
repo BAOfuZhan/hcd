@@ -62,6 +62,21 @@ def get_date(day_offset: int = 0):
     return get_beijing_date(day_offset)
 
 
+def _beijing_now_naive() -> datetime.datetime:
+    """返回无时区的北京时间，兼容本文件现有 datetime 用法。"""
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+
+
+def _resolve_beijing_end_dt(endtime_hms: str, now: datetime.datetime | None = None) -> datetime.datetime:
+    """把 HH:MM:SS 结束时间解析成本轮结束时刻，支持跨午夜。"""
+    now = now or _beijing_now_naive()
+    h, m, s = map(int, endtime_hms.split(":"))
+    end_dt = now.replace(hour=h, minute=m, second=s, microsecond=0)
+    if end_dt < now and now - end_dt > datetime.timedelta(hours=12):
+        end_dt += datetime.timedelta(days=1)
+    return end_dt
+
+
 class CredentialRejectedError(RuntimeError):
     """超星明确拒绝登录凭证时抛出，要求外层立即终止程序。"""
 
@@ -1656,11 +1671,11 @@ class reserve:
             while ~suc and self.max_attempt > 0:
                 # 如果配置了结束时间，并且在 GitHub Actions 模式下，达到或超过结束时间就立刻停止循环
                 if endtime_hms and action:
-                    beijing_now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-                    current_hms = beijing_now.strftime("%H:%M:%S")
-                    if current_hms >= endtime_hms:
+                    beijing_now = _beijing_now_naive()
+                    end_dt = _resolve_beijing_end_dt(endtime_hms, beijing_now)
+                    if beijing_now >= end_dt:
                         logging.info(
-                            f"[submit] Current Beijing time {current_hms} >= ENDTIME {endtime_hms}, stop submit loop"
+                            f"[submit] Current Beijing time {beijing_now.strftime('%Y-%m-%d %H:%M:%S')} >= end_dt {end_dt.strftime('%Y-%m-%d %H:%M:%S')} (ENDTIME {endtime_hms}), stop submit loop"
                         )
                         return suc
 
